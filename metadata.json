@@ -1,0 +1,11 @@
+{
+  "name": "MeshGuard Secure Dual-Mode Messenger",
+  "description": "A high-performance zero-knowledge E2EE messaging and calling platform featuring dual online/offline Bluetooth and Wi-Fi Direct mesh networking, uncompressed P2P transfers, and rich personalization.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
