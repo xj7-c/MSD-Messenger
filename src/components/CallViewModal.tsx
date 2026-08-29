@@ -18,15 +18,19 @@ import {
   Sliders,
   Terminal,
   Eye,
-  Crosshair
+  Crosshair,
+  Wifi,
+  Users
 } from 'lucide-react';
 import { CallSession, Chat, User } from '../types';
 import { soundFx } from '../utils/soundFx';
+import { meshEngine } from '../services/meshEngine';
 
 interface CallViewModalProps {
   chat: Chat;
   isVideo: boolean;
   onEndCall: () => void;
+  isIncomingCall?: boolean;
 }
 
 type VideoFilterMode = 'natural' | 'night-vision' | 'thermal' | 'cyber-scan';
@@ -35,6 +39,7 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
   chat,
   isVideo,
   onEndCall,
+  isIncomingCall = false,
 }) => {
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(!isVideo);
@@ -44,39 +49,219 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
   const [videoFilter, setVideoFilter] = useState<VideoFilterMode>('natural');
   const [callSeconds, setCallSeconds] = useState(0);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [liveAudioLevels, setLiveAudioLevels] = useState<number[]>([15, 25, 40, 60, 45, 75, 90, 55, 65, 45, 35, 55, 70, 50, 35, 20]);
+  const [isPeerConnected, setIsPeerConnected] = useState(true);
+
   const localVideoRef = useRef<HTMLVideoElement>(null);
+  const screenVideoRef = useRef<HTMLVideoElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   const peerUser = chat.participants.find((p) => p.user.id !== 'user-me')?.user;
 
+  // Initialize Media Streams (Camera / Mic) and Signaling
   useEffect(() => {
     soundFx.playCryptoVerify();
+
+    // Broadcast call offer if outgoing
+    if (!isIncomingCall) {
+      meshEngine.sendCallSignal({
+        type: 'signal:call_offer',
+        chatId: chat.id,
+        callerName: 'User',
+        isVideo,
+        timestamp: Date.now(),
+      });
+    }
+
     const interval = setInterval(() => {
       setCallSeconds((prev) => prev + 1);
     }, 1000);
 
-    // Attempt real user webcam if browser environment permits
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && isVideo) {
-      navigator.mediaDevices
-        .getUserMedia({ video: true, audio: true })
-        .then((stream) => {
+    // Subscribe to mesh call signals
+    const unsubscribe = meshEngine.subscribe((event) => {
+      if (event.type === 'call_signal') {
+        const payload = event.payload;
+        if (payload?.type === 'signal:call_end') {
+          soundFx.playSend();
+          onEndCall();
+        }
+      }
+    });
+
+    // Request hardware media (Webcam and/or Microphone)
+    const requestMedia = async () => {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        return;
+      }
+
+      try {
+        let stream: MediaStream | null = null;
+
+        if (isVideo) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+              audio: { echoCancellation: true, noiseSuppression: true },
+            });
+          } catch (vidErr) {
+            console.warn('Video + Audio failed, trying video only or audio fallback:', vidErr);
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            } catch {
+              stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
+          }
+        } else {
+          // Voice Call - Request Microphone
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+            });
+          } catch (micErr) {
+            console.warn('Microphone permission denied for voice call:', micErr);
+          }
+        }
+
+        if (stream) {
           setLocalStream(stream);
-          if (localVideoRef.current) {
+
+          if (localVideoRef.current && isVideo) {
             localVideoRef.current.srcObject = stream;
           }
-        })
-        .catch(() => {
-          // Camera permission denied or iframe mock, smooth fallback
-        });
-    }
+
+          // Setup AudioContext Analyzer to visualize user's live speech
+          try {
+            const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+            if (AudioCtx) {
+              const ctx = new AudioCtx();
+              audioContextRef.current = ctx;
+              const source = ctx.createMediaStreamSource(stream);
+              const analyser = ctx.createAnalyser();
+              analyser.fftSize = 64;
+              source.connect(analyser);
+              analyserRef.current = analyser;
+
+              const dataArray = new Uint8Array(analyser.frequencyBinCount);
+              const renderVisualizer = () => {
+                analyser.getByteFrequencyData(dataArray);
+                const bars: number[] = [];
+                for (let i = 0; i < 16; i++) {
+                  const val = dataArray[i * 2] || 0;
+                  bars.push(Math.max(12, Math.min(100, Math.round((val / 255) * 100))));
+                }
+                setLiveAudioLevels(bars);
+                animFrameRef.current = requestAnimationFrame(renderVisualizer);
+              };
+              renderVisualizer();
+            }
+          } catch (e) {
+            console.warn('Audio analyzer error:', e);
+          }
+        }
+      } catch (err) {
+        console.warn('Media access error:', err);
+      }
+    };
+
+    requestMedia();
 
     return () => {
       clearInterval(interval);
-      if (localStream) {
-        localStream.getTracks().forEach((track) => track.stop());
+      unsubscribe();
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {});
       }
     };
   }, []);
+
+  // Update local video element when stream is ready
+  useEffect(() => {
+    if (localVideoRef.current && localStream && isVideo && !isCameraOff) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream, isVideo, isCameraOff]);
+
+  // Handle Mute Toggle
+  const handleToggleMute = () => {
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+    soundFx.playHapticTap();
+
+    if (localStream) {
+      localStream.getAudioTracks().forEach((track) => {
+        track.enabled = !nextMuted;
+      });
+    }
+  };
+
+  // Handle Camera Toggle
+  const handleToggleCamera = () => {
+    const nextCameraOff = !isCameraOff;
+    setIsCameraOff(nextCameraOff);
+    soundFx.playHapticTap();
+
+    if (localStream) {
+      localStream.getVideoTracks().forEach((track) => {
+        track.enabled = !nextCameraOff;
+      });
+    }
+  };
+
+  // Handle Screen Share
+  const handleToggleScreenShare = async () => {
+    soundFx.playHapticTap();
+
+    if (isScreenSharing) {
+      if (screenStream) {
+        screenStream.getTracks().forEach((track) => track.stop());
+        setScreenStream(null);
+      }
+      setIsScreenSharing(false);
+      return;
+    }
+
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true,
+        });
+
+        setScreenStream(stream);
+        setIsScreenSharing(true);
+
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = stream;
+        }
+
+        // When user stops screen share from browser controls
+        stream.getVideoTracks()[0].onended = () => {
+          setIsScreenSharing(false);
+          setScreenStream(null);
+        };
+      } catch (err) {
+        console.warn('Screen share cancelled or not allowed:', err);
+        // Toggle simulated screen cast if permission denied
+        setIsScreenSharing(true);
+      }
+    } else {
+      setIsScreenSharing(true);
+    }
+  };
+
+  // Update screen video element when screenStream changes
+  useEffect(() => {
+    if (screenVideoRef.current && screenStream) {
+      screenVideoRef.current.srcObject = screenStream;
+    }
+  }, [screenStream, isScreenSharing]);
 
   const formatCallTime = (totalSec: number) => {
     const mins = Math.floor(totalSec / 60);
@@ -86,6 +271,20 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
 
   const handleEnd = () => {
     soundFx.playSend();
+    // Signal peer that call is ended
+    meshEngine.sendCallSignal({
+      type: 'signal:call_end',
+      chatId: chat.id,
+      timestamp: Date.now(),
+    });
+
+    if (localStream) {
+      localStream.getTracks().forEach((track) => track.stop());
+    }
+    if (screenStream) {
+      screenStream.getTracks().forEach((track) => track.stop());
+    }
+
     onEndCall();
   };
 
@@ -116,8 +315,9 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
               <h3 className="text-sm sm:text-base font-bold text-white">
                 {chat.name}
               </h3>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 font-mono">
-                Direct Wi-Fi Direct P2P
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 font-mono flex items-center gap-1">
+                <Wifi className="w-2.5 h-2.5" />
+                <span>Direct Wi-Fi Direct P2P</span>
               </span>
             </div>
             <p className="text-xs text-slate-400 font-mono flex items-center gap-2">
@@ -135,7 +335,7 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
         <div className="flex items-center gap-2 sm:gap-3 bg-slate-900/90 border border-white/10 px-3 sm:px-4 py-1.5 rounded-2xl text-xs font-mono">
           <div>
             <span className="text-slate-500 uppercase text-[9px] block">Latency</span>
-            <span className="text-emerald-400 font-bold">3.8 ms</span>
+            <span className="text-emerald-400 font-bold">3.2 ms</span>
           </div>
           <div className="w-[1px] h-6 bg-white/10" />
           <div>
@@ -145,7 +345,7 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
           <div className="w-[1px] h-6 bg-white/10" />
           <div>
             <span className="text-slate-500 uppercase text-[9px] block">Bitrate</span>
-            <span className="text-slate-200 font-bold">12.4 Mbps</span>
+            <span className="text-slate-200 font-bold">14.8 Mbps</span>
           </div>
           <button
             onClick={() => setShowDiagnostics(!showDiagnostics)}
@@ -160,38 +360,54 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
       {/* Center Video/Audio Canvas */}
       <div className="w-full max-w-5xl flex-1 my-3 relative rounded-3xl overflow-hidden bg-slate-900/80 border border-white/15 shadow-2xl flex items-center justify-center">
         {isScreenSharing ? (
-          /* Screen Sharing Simulated Tactical Stream */
-          <div className="w-full h-full bg-slate-950 p-4 font-mono text-xs overflow-hidden relative flex flex-col justify-between">
-            <div className="flex items-center justify-between border-b border-white/10 pb-2 text-cyan-400">
-              <div className="flex items-center gap-2">
-                <Terminal className="w-4 h-4" />
-                <span className="font-bold uppercase tracking-wider">
-                  Tactical Host Terminal — Mesh Relay Protocol v4.2
+          /* Screen Sharing Display */
+          screenStream ? (
+            <div className="relative w-full h-full bg-black flex items-center justify-center">
+              <video
+                ref={screenVideoRef}
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain"
+              />
+              <div className="absolute top-4 left-4 px-3 py-1.5 rounded-xl bg-slate-950/80 backdrop-blur-md text-xs font-mono text-cyan-300 border border-white/15 shadow-md flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                <span>Live Screen Sharing Active</span>
+              </div>
+            </div>
+          ) : (
+            /* Tactical Terminal Screen Cast Fallback */
+            <div className="w-full h-full bg-slate-950 p-4 font-mono text-xs overflow-hidden relative flex flex-col justify-between">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2 text-cyan-400">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-4 h-4" />
+                  <span className="font-bold uppercase tracking-wider">
+                    Tactical Host Terminal — Mesh Relay Protocol v4.2
+                  </span>
+                </div>
+                <span className="text-[10px] text-emerald-400 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800">
+                  100% Uncompressed 4K Screen Cast
                 </span>
               </div>
-              <span className="text-[10px] text-emerald-400 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800">
-                100% Uncompressed 4K Screen Cast
-              </span>
-            </div>
 
-            <div className="space-y-1.5 text-slate-300 overflow-hidden py-3 opacity-90 leading-relaxed text-[11px]">
-              <p className="text-emerald-400 font-bold">&gt; meshctl node --discover-all --rf-band 5.8ghz</p>
-              <p className="text-cyan-300">[OK] Wi-Fi Direct P2P link established with peer ({chat.name})</p>
-              <p className="text-slate-400">[0.003s] Diffie-Hellman Key Exchange (Curve25519) complete. Zero-Knowledge session key established.</p>
-              <p className="text-amber-300">[STATUS] Streaming AV1 60 FPS video @ 480 Mbps lossless rate.</p>
-              <p className="text-slate-400">&gt; telemetry-monitor --poll-rate 10ms --forward-secrecy</p>
-              <p className="text-emerald-300">[OK] 0 packets dropped. Jitter: 0.2ms. SNR: 44 dB.</p>
-              <p className="text-purple-300">&gt; crypto-engine --verify-fingerprint {chat.e2eeRatchetState.rootKeyFingerprint}</p>
-              <p className="text-emerald-400 font-bold">[VERIFIED] SHA-256 integrity match 100.000%.</p>
-            </div>
+              <div className="space-y-1.5 text-slate-300 overflow-hidden py-3 opacity-90 leading-relaxed text-[11px]">
+                <p className="text-emerald-400 font-bold">&gt; meshctl node --discover-all --rf-band 5.8ghz</p>
+                <p className="text-cyan-300">[OK] Wi-Fi Direct P2P link established with peer ({chat.name})</p>
+                <p className="text-slate-400">[0.003s] Diffie-Hellman Key Exchange (Curve25519) complete. Zero-Knowledge session key established.</p>
+                <p className="text-amber-300">[STATUS] Streaming AV1 60 FPS video @ 480 Mbps lossless rate.</p>
+                <p className="text-slate-400">&gt; telemetry-monitor --poll-rate 10ms --forward-secrecy</p>
+                <p className="text-emerald-300">[OK] 0 packets dropped. Jitter: 0.2ms. SNR: 44 dB.</p>
+                <p className="text-purple-300">&gt; crypto-engine --verify-fingerprint {chat.e2eeRatchetState?.rootKeyFingerprint || '0x99f4...28a1'}</p>
+                <p className="text-emerald-400 font-bold">[VERIFIED] SHA-256 integrity match 100.000%.</p>
+              </div>
 
-            <div className="p-2 bg-slate-900/90 rounded-xl border border-white/10 flex items-center justify-between text-[10px] text-slate-400">
-              <span>Shared Display: 3840 x 2160 @ 60 Hz</span>
-              <span className="text-cyan-300">Live P2P Stream Active</span>
+              <div className="p-2 bg-slate-900/90 rounded-xl border border-white/10 flex items-center justify-between text-[10px] text-slate-400">
+                <span>Shared Display: 3840 x 2160 @ 60 Hz</span>
+                <span className="text-cyan-300">Live P2P Stream Active</span>
+              </div>
             </div>
-          </div>
+          )
         ) : isVideo && !isCameraOff ? (
-          <div className="relative w-full h-full overflow-hidden">
+          <div className="relative w-full h-full overflow-hidden bg-black">
             <img
               src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=1200&auto=format&fit=crop&q=80"
               alt="Remote Video"
@@ -243,7 +459,7 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
             </div>
           </div>
         ) : (
-          /* Voice Call Audio Graphic with Dynamic Waves */
+          /* Voice Call Audio Graphic with Real Microphone Spectrum */
           <div className="flex flex-col items-center justify-center space-y-6 text-center p-6">
             <div className="relative">
               <img
@@ -259,18 +475,18 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
               <h2 className="text-xl sm:text-2xl font-bold text-white">{chat.name}</h2>
               <p className="text-xs font-mono text-cyan-400 flex items-center justify-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>HD Voice Stream • Spatial 3D Audio Active</span>
+                <span>HD Voice Stream • 48kHz Opus Live Active</span>
               </p>
             </div>
 
-            {/* Audio Waveform Spectrum */}
+            {/* Real-Time Live Audio Waveform Spectrum from Local Microphone */}
             <div className="flex items-center gap-1.5 h-12">
-              {[8, 16, 28, 42, 35, 48, 22, 14, 38, 45, 30, 20, 40, 50, 25, 12].map((val, i) => (
+              {liveAudioLevels.map((val, i) => (
                 <span
                   key={i}
-                  className="w-1.5 bg-gradient-to-t from-cyan-600 to-emerald-400 rounded-full transition-all duration-150"
+                  className="w-1.5 bg-gradient-to-t from-cyan-600 to-emerald-400 rounded-full transition-all duration-75 shadow-[0_0_8px_rgba(6,182,212,0.6)]"
                   style={{
-                    height: `${Math.max(6, (val * (Math.sin(callSeconds * 2 + i) + 1.2)) / 1.5)}px`,
+                    height: `${Math.max(6, (val / 100) * 48)}px`,
                   }}
                 />
               ))}
@@ -304,7 +520,7 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
               autoPlay
               playsInline
               muted
-              className="w-full h-full object-cover mirror"
+              className="w-full h-full object-cover scale-x-[-1]"
             />
             <div className="absolute bottom-1 left-2 text-[9px] font-mono text-white/90 bg-black/70 px-1 rounded backdrop-blur-xs">
               You (Local P2P)
@@ -339,10 +555,7 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
       <div className="w-full max-w-xl bg-slate-900/90 backdrop-blur-2xl border border-white/15 px-6 py-3 rounded-3xl shadow-2xl flex items-center justify-between">
         {/* Mute Toggle */}
         <button
-          onClick={() => {
-            setIsMuted(!isMuted);
-            soundFx.playHapticTap();
-          }}
+          onClick={handleToggleMute}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
             isMuted
               ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
@@ -355,10 +568,7 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
 
         {/* Video Toggle */}
         <button
-          onClick={() => {
-            setIsCameraOff(!isCameraOff);
-            soundFx.playHapticTap();
-          }}
+          onClick={handleToggleCamera}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
             isCameraOff
               ? 'bg-slate-800 text-slate-500'
@@ -371,10 +581,7 @@ export const CallViewModal: React.FC<CallViewModalProps> = ({
 
         {/* Screen Share Toggle */}
         <button
-          onClick={() => {
-            setIsScreenSharing(!isScreenSharing);
-            soundFx.playHapticTap();
-          }}
+          onClick={handleToggleScreenShare}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
             isScreenSharing
               ? 'bg-indigo-500/30 text-indigo-300 border border-indigo-400/50 shadow-sm'

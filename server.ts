@@ -30,6 +30,7 @@ interface ConnectedPeer {
 
 const activePeers = new Map<string, ConnectedPeer>();
 const chatHistories = new Map<string, any[]>();
+const customEmojisRegistry = new Map<string, any>();
 
 async function startServer() {
   const app = express();
@@ -42,6 +43,7 @@ async function startServer() {
     res.json({
       status: 'ok',
       onlinePeersCount: activePeers.size,
+      customEmojisCount: customEmojisRegistry.size,
       timestamp: Date.now(),
     });
   });
@@ -59,6 +61,69 @@ async function startServer() {
     res.json({ messages: chatHistories.get(chatId) || [] });
   });
 
+  // Custom Emojis HTTP API
+  app.get('/api/emojis', (req, res) => {
+    res.json({ emojis: Array.from(customEmojisRegistry.values()) });
+  });
+
+  app.post('/api/emojis', (req, res) => {
+    const { emoji } = req.body;
+    if (emoji && (emoji.code || emoji.shortcode)) {
+      const codeKey = (emoji.code || `:${emoji.shortcode}:`).toLowerCase();
+      customEmojisRegistry.set(codeKey, emoji);
+      broadcastToAll({
+        type: 'emoji:registered',
+        emoji,
+        timestamp: Date.now(),
+      });
+      return res.json({ status: 'ok', registered: emoji });
+    }
+    res.status(400).json({ error: 'Invalid emoji object' });
+  });
+
+  // Direct HTTP Fallback for sending messages reliably
+  app.post('/api/messages/send', (req, res) => {
+    const { message, targetPeerId } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: 'Message payload required' });
+    }
+
+    if (message.customEmojisPayload && Array.isArray(message.customEmojisPayload)) {
+      for (const emo of message.customEmojisPayload) {
+        if (emo && (emo.code || emo.shortcode)) {
+          const k = (emo.code || `:${emo.shortcode}:`).toLowerCase();
+          customEmojisRegistry.set(k, emo);
+        }
+      }
+    }
+
+    if (message.chatId) {
+      const history = chatHistories.get(message.chatId) || [];
+      history.push(message);
+      if (history.length > 200) history.shift();
+      chatHistories.set(message.chatId, history);
+    }
+
+    if (targetPeerId && activePeers.has(targetPeerId)) {
+      const target = activePeers.get(targetPeerId)!;
+      if (target.ws && target.ws.readyState === WebSocket.OPEN) {
+        target.ws.send(JSON.stringify({
+          type: 'message:received',
+          message,
+          timestamp: Date.now(),
+        }));
+      }
+    } else {
+      broadcastToAll({
+        type: 'message:received',
+        message,
+        timestamp: Date.now(),
+      }, message.senderId);
+    }
+
+    res.json({ status: 'ok', messageId: message.id, timestamp: Date.now() });
+  });
+
   // Create HTTP Server
   const server = http.createServer(app);
 
@@ -69,7 +134,11 @@ async function startServer() {
     const payload = JSON.stringify(data);
     for (const [peerId, peer] of activePeers.entries()) {
       if (peerId !== exceptPeerId && peer.ws && peer.ws.readyState === WebSocket.OPEN) {
-        peer.ws.send(payload);
+        try {
+          peer.ws.send(payload);
+        } catch (e) {
+          // ignore
+        }
       }
     }
   }
@@ -103,12 +172,13 @@ async function startServer() {
             currentPeerId = peerData.id;
             activePeers.set(peerData.id, peerData);
 
-            // Send registration acknowledgment with current active peers
+            // Send registration acknowledgment with current active peers & known custom emojis
             const currentNodes = Array.from(activePeers.values()).map(({ ws: _ws, ...rest }) => rest);
             ws.send(JSON.stringify({
               type: 'node:registered',
               yourId: peerData.id,
               activeNodes: currentNodes,
+              customEmojis: Array.from(customEmojisRegistry.values()),
               timestamp: Date.now(),
             }));
 
@@ -128,9 +198,33 @@ async function startServer() {
             break;
           }
 
+          case 'emoji:register': {
+            const { emoji } = msg;
+            if (emoji && (emoji.code || emoji.shortcode)) {
+              const codeKey = (emoji.code || `:${emoji.shortcode}:`).toLowerCase();
+              customEmojisRegistry.set(codeKey, emoji);
+              broadcastToAll({
+                type: 'emoji:registered',
+                emoji,
+                timestamp: Date.now(),
+              });
+            }
+            break;
+          }
+
           case 'message:send': {
             const { message } = msg;
             if (!message) return;
+
+            // Automatically register any attached custom emojis globally
+            if (message.customEmojisPayload && Array.isArray(message.customEmojisPayload)) {
+              for (const emo of message.customEmojisPayload) {
+                if (emo && (emo.code || emo.shortcode)) {
+                  const k = (emo.code || `:${emo.shortcode}:`).toLowerCase();
+                  customEmojisRegistry.set(k, emo);
+                }
+              }
+            }
 
             // Store in chat history
             if (message.chatId) {
@@ -139,6 +233,15 @@ async function startServer() {
               if (history.length > 200) history.shift();
               chatHistories.set(message.chatId, history);
             }
+
+            // Instantly send ACK back to sender so their UI changes from 'sending' to 'sent'
+            ws.send(JSON.stringify({
+              type: 'message:ack',
+              messageId: message.id,
+              chatId: message.chatId,
+              status: 'sent',
+              timestamp: Date.now(),
+            }));
 
             // Target routing or global room broadcast
             if (msg.targetPeerId && activePeers.has(msg.targetPeerId)) {
@@ -157,6 +260,35 @@ async function startServer() {
                 message,
                 timestamp: Date.now(),
               }, currentPeerId || undefined);
+            }
+            break;
+          }
+
+          case 'message:receipt': {
+            // Receipt from receiver: 'delivered' or 'seen'
+            const { chatId, messageId, senderId, receiptType } = msg;
+            if (senderId && activePeers.has(senderId)) {
+              const sender = activePeers.get(senderId)!;
+              if (sender.ws && sender.ws.readyState === WebSocket.OPEN) {
+                sender.ws.send(JSON.stringify({
+                  type: 'message:status_update',
+                  chatId,
+                  messageId,
+                  status: receiptType || 'delivered',
+                  seenBy: currentPeerId,
+                  timestamp: Date.now(),
+                }));
+              }
+            } else {
+              // Broadcast receipt update if sender not directly indexed
+              broadcastToAll({
+                type: 'message:status_update',
+                chatId,
+                messageId,
+                status: receiptType || 'delivered',
+                seenBy: currentPeerId,
+                timestamp: Date.now(),
+              });
             }
             break;
           }

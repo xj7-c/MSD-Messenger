@@ -146,7 +146,7 @@ export interface Message {
   senderAvatar: string;
   content: string;
   timestamp: number;
-  status: 'sending' | 'mesh-relayed' | 'delivered' | 'read' | 'failed';
+  status: 'sending' | 'sent' | 'delivered' | 'seen' | 'read' | 'mesh-relayed' | 'failed';
   transportProtocol: TransportProtocol;
   encryptedPayloadSnippet: string;
   hopsCount: number;
@@ -159,10 +159,47 @@ export interface Message {
     content: string;
   };
   fileAttachment?: FileAttachment;
+  customEmojisPayload?: {
+    id: string;
+    code: string;
+    shortcode: string;
+    label: string;
+    url: string;
+    isAnimated: boolean;
+    serverId: string;
+    serverName: string;
+    serverIcon: string;
+    category: string;
+  }[];
   isEncrypted: boolean;
   selfDestructSec?: number;
   expiresAt?: number;
   isBurned?: boolean;
+  // Deep Protocol Enhancements
+  powHeader?: {
+    nonce: number;
+    difficultyBits: number;
+    solutionHashHex: string;
+    solveDurationMs: number;
+  };
+  dtnBundleInfo?: {
+    bundleId: string;
+    custodyAccepted: boolean;
+    expiresAt: number;
+    hopCount: number;
+    visitedNodesCount: number;
+  };
+  senderKeyMetadata?: {
+    isSenderKeyGroup: boolean;
+    iteration: number;
+    chainKeyFingerprint: string;
+  };
+  arqFramesInfo?: {
+    totalFrames: number;
+    fecParityFrames: number;
+    mtuBytes: number;
+  };
+  coverTrafficPadded?: boolean;
 }
 
 export interface GroupPermissions {

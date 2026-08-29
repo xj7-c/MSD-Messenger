@@ -11,7 +11,9 @@ import {
   Layers,
   Activity,
   HardDrive,
-  Bell
+  Bell,
+  Download,
+  Cpu
 } from 'lucide-react';
 import { ConnectivityMode, User, CustomThemeSettings } from '../types';
 
@@ -26,6 +28,8 @@ interface HeaderProps {
   onOpenProfileCustomizer: () => void;
   onOpenArchitecture: () => void;
   onOpenNotifications: () => void;
+  onOpenInstallModal?: () => void;
+  onOpenProtocolHub?: () => void;
   unreadNotificationsCount?: number;
   theme: CustomThemeSettings;
   nodesCount: number;
@@ -42,43 +46,123 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenProfileCustomizer,
   onOpenArchitecture,
   onOpenNotifications,
+  onOpenInstallModal,
+  onOpenProtocolHub,
   unreadNotificationsCount = 0,
   theme,
   nodesCount,
 }) => {
+  const [showMobileModeMenu, setShowMobileModeMenu] = React.useState(false);
+
+  const getModeLabel = (mode: ConnectivityMode) => {
+    switch (mode) {
+      case 'dual-hybrid':
+        return 'Dual Hybrid';
+      case 'offline-mesh-only':
+        return 'Offline Mesh';
+      case 'internet-only':
+        return 'Internet';
+    }
+  };
+
+  const getModeIcon = (mode: ConnectivityMode) => {
+    switch (mode) {
+      case 'dual-hybrid':
+        return <Zap className="w-3.5 h-3.5 text-cyan-400" />;
+      case 'offline-mesh-only':
+        return <WifiOff className="w-3.5 h-3.5 text-emerald-400" />;
+      case 'internet-only':
+        return <Wifi className="w-3.5 h-3.5 text-indigo-400" />;
+    }
+  };
+
   return (
     <header
       id="main-app-header"
-      className="h-14 sm:h-16 border-b border-white/10 bg-slate-950/70 backdrop-blur-xl px-2.5 sm:px-4 flex items-center justify-between shrink-0 z-30 select-none shadow-[0_4px_24px_0_rgba(0,0,0,0.25)]"
+      className="h-14 sm:h-16 border-b border-white/10 bg-slate-950/70 backdrop-blur-xl px-2 sm:px-4 flex items-center justify-between shrink-0 z-30 select-none shadow-[0_4px_24px_0_rgba(0,0,0,0.25)] relative"
     >
       {/* Brand & Dual Mode Indicator */}
-      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+      <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
         <div className="relative flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl bg-cyan-500/10 border border-cyan-400/30 backdrop-blur-md shadow-[0_0_15px_rgba(6,182,212,0.15)] shrink-0">
           <Radio className="w-4 h-4 sm:w-5 sm:h-5 text-cyan-400 animate-pulse" />
           <span className="absolute -bottom-0.5 -right-0.5 w-2 sm:w-2.5 h-2 sm:h-2.5 rounded-full bg-emerald-400 ring-2 ring-slate-950 shadow-[0_0_8px_#34d399]" />
         </div>
 
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5 sm:gap-2">
-            <h1 className="font-bold text-sm sm:text-base tracking-tight text-white flex items-center gap-1 drop-shadow-sm truncate">
+          <div className="flex items-center gap-1 sm:gap-2">
+            <h1 className="font-bold text-xs sm:text-base tracking-tight text-white flex items-center gap-1 drop-shadow-sm truncate">
               MeshGuard
               <span className="text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 font-mono font-medium backdrop-blur-sm shadow-sm hidden xs:inline-block">
                 P2P • E2EE
               </span>
             </h1>
           </div>
-          <p className="text-[10px] sm:text-[11px] text-slate-300/80 flex items-center gap-1 font-mono truncate">
+          <p className="text-[9px] sm:text-[11px] text-slate-300/80 flex items-center gap-1 font-mono truncate">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-ping shrink-0" />
-            <span className="truncate">Zero-Knowledge Mesh</span>
+            <span className="truncate hidden sm:inline">Zero-Knowledge Mesh</span>
+            <span className="truncate sm:hidden">{nodesCount} Nodes</span>
           </p>
         </div>
 
-        {/* Dual Mode Switcher Pill */}
-        <div className="hidden md:flex items-center ml-4 bg-slate-900/40 backdrop-blur-md p-1 rounded-2xl border border-white/10 shadow-inner">
+        {/* Mobile Mode Switcher Dropdown Button (visible on < md screens) */}
+        <div className="md:hidden relative ml-1">
+          <button
+            onClick={() => setShowMobileModeMenu(!showMobileModeMenu)}
+            className="px-2 py-1 rounded-xl bg-slate-900/60 border border-white/10 text-[10px] font-mono text-cyan-300 flex items-center gap-1 cursor-pointer"
+            title="Toggle Networking Mode"
+          >
+            {getModeIcon(activeMode)}
+            <span className="truncate max-w-[65px]">{getModeLabel(activeMode)}</span>
+          </button>
+
+          {showMobileModeMenu && (
+            <div className="absolute top-full left-0 mt-1 w-44 bg-slate-900/95 backdrop-blur-2xl border border-white/15 rounded-2xl shadow-2xl p-1 z-40 space-y-1 text-xs font-mono">
+              <button
+                onClick={() => {
+                  onModeChange('dual-hybrid');
+                  setShowMobileModeMenu(false);
+                }}
+                className={`w-full text-left px-2.5 py-1.5 rounded-xl flex items-center gap-2 cursor-pointer ${
+                  activeMode === 'dual-hybrid' ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-400/40' : 'text-slate-300 hover:bg-white/5'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Dual Hybrid</span>
+              </button>
+              <button
+                onClick={() => {
+                  onModeChange('offline-mesh-only');
+                  setShowMobileModeMenu(false);
+                }}
+                className={`w-full text-left px-2.5 py-1.5 rounded-xl flex items-center gap-2 cursor-pointer ${
+                  activeMode === 'offline-mesh-only' ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/40' : 'text-slate-300 hover:bg-white/5'
+                }`}
+              >
+                <WifiOff className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Offline Mesh</span>
+              </button>
+              <button
+                onClick={() => {
+                  onModeChange('internet-only');
+                  setShowMobileModeMenu(false);
+                }}
+                className={`w-full text-left px-2.5 py-1.5 rounded-xl flex items-center gap-2 cursor-pointer ${
+                  activeMode === 'internet-only' ? 'bg-indigo-500/25 text-indigo-200 border border-indigo-400/40' : 'text-slate-300 hover:bg-white/5'
+                }`}
+              >
+                <Wifi className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Internet Relay</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Dual Mode Switcher Pill (Desktop & Tablets >= md) */}
+        <div className="hidden md:flex items-center ml-2 lg:ml-4 bg-slate-900/40 backdrop-blur-md p-1 rounded-2xl border border-white/10 shadow-inner">
           <button
             id="mode-dual-btn"
             onClick={() => onModeChange('dual-hybrid')}
-            className={`px-3 py-1 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-2.5 lg:px-3 py-1 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
               activeMode === 'dual-hybrid'
                 ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-400/40 shadow-[0_0_12px_rgba(6,182,212,0.25)]'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
@@ -92,7 +176,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             id="mode-mesh-btn"
             onClick={() => onModeChange('offline-mesh-only')}
-            className={`px-3 py-1 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-2.5 lg:px-3 py-1 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
               activeMode === 'offline-mesh-only'
                 ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/40 shadow-[0_0_12px_rgba(16,185,129,0.25)]'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
@@ -106,7 +190,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             id="mode-internet-btn"
             onClick={() => onModeChange('internet-only')}
-            className={`px-3 py-1 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-2.5 lg:px-3 py-1 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
               activeMode === 'internet-only'
                 ? 'bg-indigo-500/25 text-indigo-200 border border-indigo-400/40 shadow-[0_0_12px_rgba(99,102,241,0.25)]'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
@@ -182,6 +266,19 @@ export const Header: React.FC<HeaderProps> = ({
           <ShieldCheck className="w-4 h-4 text-cyan-400" />
         </button>
 
+        {/* Tactical Protocol Suite (DTN, Sender Keys, ARQ, PoW, Cover Traffic, Native Bridge) */}
+        {onOpenProtocolHub && (
+          <button
+            id="open-protocol-hub-btn"
+            onClick={onOpenProtocolHub}
+            className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl bg-cyan-950/50 hover:bg-cyan-900/70 text-cyan-300 border border-cyan-500/40 text-xs font-semibold transition-all flex items-center gap-1.5 backdrop-blur-md cursor-pointer shadow-[0_0_12px_rgba(6,182,212,0.15)]"
+            title="Tactical Protocol Suite (DTN Routing, Sender Keys, Low-MTU ARQ, PoW, Cover Traffic)"
+          >
+            <Cpu className="w-4 h-4 text-cyan-300 animate-pulse" />
+            <span className="hidden xl:inline">Protocols</span>
+          </button>
+        )}
+
         {/* Tactical Notification Center Trigger */}
         <button
           id="open-notifications-btn"
@@ -196,6 +293,19 @@ export const Header: React.FC<HeaderProps> = ({
             </span>
           )}
         </button>
+
+        {/* Install Standalone App Trigger */}
+        {onOpenInstallModal && (
+          <button
+            id="open-install-app-btn"
+            onClick={onOpenInstallModal}
+            className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-500/40 text-xs font-semibold transition-all flex items-center gap-1.5 backdrop-blur-md cursor-pointer shadow-[0_0_12px_rgba(6,182,212,0.15)]"
+            title="Install MeshGuard as Native Standalone App (Works Offline Without Wi-Fi)"
+          >
+            <Download className="w-4 h-4 text-cyan-400" />
+            <span className="hidden xl:inline">Install App</span>
+          </button>
+        )}
 
         {/* Complete App Customization & Themes Engine */}
         <button

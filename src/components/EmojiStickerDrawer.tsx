@@ -26,6 +26,7 @@ import {
   DiscordEmojiServer 
 } from '../data/discordEmojis';
 import { registerCustomEmoji, getAllCustomEmojis } from '../utils/emojiParser';
+import { meshEngine } from '../services/meshEngine';
 
 interface EmojiStickerDrawerProps {
   onSelectEmoji: (code: string) => void;
@@ -53,6 +54,16 @@ export const EmojiStickerDrawer: React.FC<EmojiStickerDrawerProps> = ({
   const [uploadIsAnimated, setUploadIsAnimated] = useState(true);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // Listen for new emojis arriving from mesh peers or server
+    const unsubscribe = meshEngine.subscribe((event) => {
+      if (event.type === 'emoji_registered' || event.type === 'nodes_updated') {
+        setEmojisList(getAllCustomEmojis());
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Set initial hovered emoji to holymoly (as in user screenshot)
   useEffect(() => {
@@ -121,6 +132,7 @@ export const EmojiStickerDrawer: React.FC<EmojiStickerDrawerProps> = ({
     };
 
     registerCustomEmoji(newEmoji);
+    meshEngine.broadcastCustomEmoji(newEmoji);
     setEmojisList((prev) => [newEmoji, ...prev]);
     setRecentCodes((prev) => [newEmoji.code, ...prev]);
     setHoveredEmoji(newEmoji);

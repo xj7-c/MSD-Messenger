@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { MeshNode, User } from '../types';
 import { soundFx } from '../utils/soundFx';
+import { bluetoothMesh } from '../services/bluetoothService';
 
 interface MeshRadarModalProps {
   nodes: MeshNode[];
@@ -41,6 +42,8 @@ export const MeshRadarModal: React.FC<MeshRadarModalProps> = ({
 }) => {
   const [selectedNode, setSelectedNode] = useState<MeshNode | null>(nodes[0] || null);
   const [isScanning, setIsScanning] = useState(false);
+  const [isBleScanning, setIsBleScanning] = useState(false);
+  const [bleStatusMsg, setBleStatusMsg] = useState<string | null>(null);
   const [beaconActive, setBeaconActive] = useState(true);
   const [copiedLink, setCopiedLink] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
@@ -59,6 +62,24 @@ export const MeshRadarModal: React.FC<MeshRadarModalProps> = ({
       setIsScanning(false);
       soundFx.playReceive();
     }, 1000);
+  };
+
+  const handlePairRealBluetooth = async () => {
+    try {
+      setIsBleScanning(true);
+      setBleStatusMsg('Scanning for nearby BLE devices...');
+      const paired = await bluetoothMesh.scanAndPairDevice();
+      if (paired) {
+        setBleStatusMsg(`Paired with ${paired.name}! Connected via Bluetooth LE.`);
+        soundFx.playCryptoVerify();
+      } else {
+        setBleStatusMsg(null);
+      }
+    } catch (err: any) {
+      setBleStatusMsg(err?.message || 'Bluetooth scan cancelled or unavailable.');
+    } finally {
+      setIsBleScanning(false);
+    }
   };
 
   const getInviteUrl = () => {
@@ -211,31 +232,52 @@ export const MeshRadarModal: React.FC<MeshRadarModalProps> = ({
           </div>
 
           {/* Quick Real Device Connect Actions */}
-          <div className="w-full flex flex-wrap items-center justify-between gap-2 p-2.5 sm:p-3 rounded-2xl bg-neutral-950/80 border border-neutral-800 text-[11px] sm:text-xs font-mono z-10 mt-2">
-            <div className="flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${beaconActive ? 'bg-emerald-400 animate-ping' : 'bg-neutral-600'}`} />
-              <span className="text-neutral-300">BLE & Wi-Fi Direct Beacon: Active</span>
+          <div className="w-full flex flex-col gap-2 p-2.5 sm:p-3 rounded-2xl bg-neutral-950/80 border border-neutral-800 text-[11px] sm:text-xs font-mono z-10 mt-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${beaconActive ? 'bg-emerald-400 animate-ping' : 'bg-neutral-600'}`} />
+                <span className="text-neutral-300">BLE & Wi-Fi Direct Beacon: Active</span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handlePairRealBluetooth}
+                  disabled={isBleScanning}
+                  className="px-2.5 py-1 rounded-xl bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/80 flex items-center gap-1.5 transition-all cursor-pointer text-[10px] sm:text-xs font-bold shadow-sm"
+                  title="Pair Real Nearby Physical Bluetooth Device (Offline)"
+                >
+                  <Radio className={`w-3 h-3 text-indigo-400 ${isBleScanning ? 'animate-spin' : ''}`} />
+                  <span>{isBleScanning ? 'Scanning BLE...' : 'Pair Bluetooth LE'}</span>
+                </button>
+
+                <button
+                  onClick={handleCopyInvite}
+                  className="px-2.5 py-1 rounded-xl bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-800/80 flex items-center gap-1.5 transition-all cursor-pointer text-[10px] sm:text-xs font-bold"
+                  title="Copy Direct P2P Mesh Link"
+                >
+                  {copiedLink ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedLink ? 'Link Copied!' : 'Copy Mesh Link'}</span>
+                </button>
+
+                <button
+                  onClick={handleOpenSecondTab}
+                  className="px-2.5 py-1 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 flex items-center gap-1.5 transition-all cursor-pointer text-[10px] sm:text-xs"
+                  title="Open another peer window in browser"
+                >
+                  <ExternalLink className="w-3 h-3 text-neutral-400" />
+                  <span>New Peer Tab</span>
+                </button>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleCopyInvite}
-                className="px-2.5 py-1 rounded-xl bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-800/80 flex items-center gap-1.5 transition-all cursor-pointer text-[10px] sm:text-xs font-bold"
-                title="Copy Direct P2P Mesh Link"
-              >
-                {copiedLink ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                <span>{copiedLink ? 'Link Copied!' : 'Copy Mesh Link'}</span>
-              </button>
-
-              <button
-                onClick={handleOpenSecondTab}
-                className="px-2.5 py-1 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 flex items-center gap-1.5 transition-all cursor-pointer text-[10px] sm:text-xs"
-                title="Open another peer window in browser"
-              >
-                <ExternalLink className="w-3 h-3" />
-                <span>Pair 2nd Device / Tab</span>
-              </button>
-            </div>
+            {bleStatusMsg && (
+              <div className="px-2.5 py-1 rounded-xl bg-indigo-950/60 border border-indigo-500/30 text-[10px] text-indigo-200 flex items-center justify-between">
+                <span>{bleStatusMsg}</span>
+                <button onClick={() => setBleStatusMsg(null)} className="text-indigo-400 hover:text-white">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
 

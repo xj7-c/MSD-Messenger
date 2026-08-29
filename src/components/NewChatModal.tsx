@@ -70,11 +70,11 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
 
     const chatName = isGroup
       ? name.trim()
-      : participantsList.find((p) => p.user.id !== 'user-me')?.user.name || 'Direct Session';
+      : participantsList.find((p) => p.user.id !== currentUser.id && p.user.id !== 'user-me')?.user.name || 'Direct Session';
 
     const avatar = isGroup
       ? 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=150&auto=format&fit=crop&q=80'
-      : participantsList.find((p) => p.user.id !== 'user-me')?.user.avatarUrl || currentUser.avatarUrl;
+      : participantsList.find((p) => p.user.id !== currentUser.id && p.user.id !== 'user-me')?.user.avatarUrl || currentUser.avatarUrl;
 
     const newChat: Chat = {
       id: 'chat-' + Date.now(),
@@ -82,8 +82,8 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
       name: chatName,
       description: isGroup ? description : undefined,
       avatar,
-      ownerId: 'user-me',
-      adminIds: ['user-me'],
+      ownerId: currentUser.id,
+      adminIds: [currentUser.id],
       participants: participantsList,
       unreadCount: 0,
       isE2EEVerified: true,

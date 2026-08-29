@@ -26,7 +26,10 @@ import {
   X,
   Copy,
   SmilePlus,
-  Volume2
+  Volume2,
+  Repeat,
+  Key,
+  EyeOff
 } from 'lucide-react';
 import { Chat, Message, User, CustomThemeSettings, FileAttachment } from '../types';
 import { MessageComposer } from './MessageComposer';
@@ -362,7 +365,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         {/* Messages List */}
         {filteredMessages.map((msg) => {
-          const isMe = msg.senderId === currentUser.id || msg.senderId === 'user-me';
+          const isMe = msg.senderId === currentUser.id || msg.senderId === 'user-me' || msg.senderName === currentUser.name;
           const bubbleClasses = getBubbleClasses(isMe);
           const isInspectingCipher = inspectCipherId === msg.id;
           const isHighlighted = highlightedMessageId === msg.id;
@@ -396,12 +399,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
           }
 
           const isVoiceMemo = msg.fileAttachment?.mimeType === 'audio/opus';
+          const isPureAttachmentFallback = msg.fileAttachment && (
+            msg.content.startsWith('[Attached Uncompressed File:') ||
+            msg.content.startsWith('[Sticker:')
+          );
 
           return (
             <div
               key={msg.id}
               id={`message-${msg.id}`}
-              className={`w-full flex flex-col ${isMe ? 'items-end' : 'items-start'} group space-y-1 transition-all duration-300 ${
+              className={`w-full flex flex-col ${
+                isMe ? 'items-end pl-6 sm:pl-16' : 'items-start pr-6 sm:pr-16'
+              } group space-y-1 transition-all duration-300 ${
                 isHighlighted ? 'ring-2 ring-cyan-400 rounded-2xl p-1 bg-cyan-950/30' : ''
               }`}
             >
@@ -419,7 +428,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               )}
 
               {/* Message Bubble Card */}
-              <div className={`max-w-[88%] sm:max-w-md md:max-w-lg p-3 sm:p-3.5 ${bubbleClasses} transition-all relative`}>
+              <div className={`max-w-[92%] sm:max-w-md md:max-w-lg p-3 sm:p-3.5 ${bubbleClasses} transition-all relative`}>
                 {/* Ephemeral Burning Countdown Bar */}
                 {remainingSec !== null && (
                   <div className="mb-2 px-2.5 py-1 rounded-xl bg-amber-950/70 border border-amber-500/50 text-[10px] font-mono text-amber-300 flex items-center justify-between">
@@ -437,14 +446,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     onClick={() => msg.quoteMessage?.id && scrollToQuotedMessage(msg.quoteMessage.id)}
                     className={`mb-2 p-2 rounded-xl text-xs space-y-0.5 cursor-pointer transition-all ${
                       isMe
-                        ? 'bg-black/30 border-l-2 border-white text-white hover:bg-black/40'
-                        : 'bg-slate-950/60 border-l-2 border-cyan-400 text-slate-200 hover:bg-slate-950/80'
+                        ? 'bg-black/35 border-l-2 border-white text-white hover:bg-black/50'
+                        : 'bg-slate-950/70 border-l-2 border-cyan-400 text-slate-200 hover:bg-slate-950/90'
                     }`}
                     title="Click to view original message"
                   >
                     <div className="flex items-center justify-between">
                       <span className={`text-[10px] font-bold font-mono ${isMe ? 'text-cyan-200' : 'text-cyan-400'}`}>
-                        ↳ {msg.quoteMessage.senderName}
+                        ↳ Replying to {msg.quoteMessage.senderName}
                       </span>
                       <CornerDownRight className="w-3 h-3 opacity-60" />
                     </div>
@@ -459,11 +468,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   <VoiceMessagePlayer
                     fileName={msg.fileAttachment.fileName}
                     isMe={isMe}
+                    audioUrl={msg.fileAttachment.previewUrl || msg.fileAttachment.streamUrl}
                   />
                 ) : msg.fileAttachment ? (
                   /* Standard Uncompressed File Attachment Card */
                   <div className={`mb-2 p-2.5 rounded-2xl backdrop-blur-md space-y-2 shadow-inner ${
-                    isMe ? 'bg-black/25 border border-white/20' : 'bg-slate-950/60 border border-amber-400/30'
+                    isMe ? 'bg-black/30 border border-white/25' : 'bg-slate-950/70 border border-amber-400/40'
                   }`}>
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-2.5 min-w-0">
@@ -522,7 +532,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     )}
 
                     {/* SHA-256 Bit-for-Bit Hash Verification Badge */}
-                    <div className="p-2 rounded-xl bg-slate-900/60 backdrop-blur-sm border border-white/10 text-[10px] font-mono space-y-0.5">
+                    <div className="p-2 rounded-xl bg-slate-900/70 backdrop-blur-sm border border-white/10 text-[10px] font-mono space-y-0.5">
                       <div className="flex items-center justify-between text-emerald-400">
                         <span className="flex items-center gap-1 truncate">
                           <Check className="w-3 h-3 shrink-0" />
@@ -546,12 +556,85 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
                 ) : null}
 
-                {/* Text Content with Rich Custom Emoji Parser (if not pure voice header) */}
-                {(!isVoiceMemo || !msg.content.startsWith('🎤')) && (
+                {/* Text Content with Rich Custom Emoji Parser (if not pure voice header or suppressed fallback) */}
+                {(!isVoiceMemo || !msg.content.startsWith('🎤')) && !isPureAttachmentFallback && (
                   <div className="text-xs sm:text-sm leading-relaxed whitespace-pre-wrap select-text font-sans">
-                    {renderMessageWithEmojis(msg.content)}
+                    {renderMessageWithEmojis(msg.content, msg.customEmojisPayload as any)}
                   </div>
                 )}
+
+                {/* Deep Protocol Tags Row (PoW, DTN, Sender Key, ARQ, Masking) */}
+                <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[9px] font-mono opacity-90">
+                  {msg.powHeader && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full border flex items-center gap-1 ${
+                        isMe
+                          ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'
+                          : 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+                      }`}
+                      title={`Proof-of-Work verified: ${msg.powHeader.difficultyBits}-bit micro-puzzle solved in ${msg.powHeader.solveDurationMs}ms (Anti-flood)`}
+                    >
+                      <ShieldCheck className="w-2.5 h-2.5 text-emerald-400" />
+                      <span>PoW {msg.powHeader.difficultyBits}b ({msg.powHeader.solveDurationMs}ms)</span>
+                    </span>
+                  )}
+
+                  {msg.dtnBundleInfo && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full border flex items-center gap-1 ${
+                        isMe
+                          ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40'
+                          : 'bg-cyan-950/60 text-cyan-300 border-cyan-500/40'
+                      }`}
+                      title="Store-and-Forward DTN Custody active with 24h TTL"
+                    >
+                      <Repeat className="w-2.5 h-2.5 text-cyan-400" />
+                      <span>DTN Custody</span>
+                    </span>
+                  )}
+
+                  {msg.senderKeyMetadata && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full border flex items-center gap-1 ${
+                        isMe
+                          ? 'bg-purple-500/20 text-purple-200 border-purple-400/40'
+                          : 'bg-purple-950/60 text-purple-300 border-purple-500/40'
+                      }`}
+                      title="Signal Sender Key Protocol broadcast (90%+ bandwidth savings)"
+                    >
+                      <Key className="w-2.5 h-2.5 text-purple-400" />
+                      <span>SenderKey #{msg.senderKeyMetadata.iteration}</span>
+                    </span>
+                  )}
+
+                  {msg.arqFramesInfo && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full border flex items-center gap-1 ${
+                        isMe
+                          ? 'bg-amber-500/20 text-amber-200 border-amber-400/40'
+                          : 'bg-amber-950/60 text-amber-300 border-amber-500/40'
+                      }`}
+                      title={`BLE Low-MTU ARQ (${msg.arqFramesInfo.totalFrames} frames with ${msg.arqFramesInfo.fecParityFrames} parity chunks)`}
+                    >
+                      <Layers className="w-2.5 h-2.5 text-amber-400" />
+                      <span>ARQ {msg.arqFramesInfo.totalFrames}f</span>
+                    </span>
+                  )}
+
+                  {msg.coverTrafficPadded && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full border flex items-center gap-1 ${
+                        isMe
+                          ? 'bg-indigo-500/20 text-indigo-200 border-indigo-400/40'
+                          : 'bg-indigo-950/60 text-indigo-300 border-indigo-500/40'
+                      }`}
+                      title="Constant Fixed-Bucket length padding & Poisson timing cover traffic"
+                    >
+                      <EyeOff className="w-2.5 h-2.5 text-indigo-400" />
+                      <span>Masked 512B</span>
+                    </span>
+                  )}
+                </div>
 
                 {/* Metadata row: Transport, Relay Hops, Time, Status */}
                 <div className={`mt-1.5 pt-1 border-t border-current/15 flex items-center justify-between gap-2 text-[10px] font-mono ${
@@ -580,18 +663,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     )}
                   </div>
 
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5">
                     <span>
                       {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                     {isMe && (
-                      <span>
-                        {msg.status === 'read' ? (
-                          <CheckCheck className="w-3 h-3 text-cyan-200" />
-                        ) : msg.status === 'delivered' ? (
-                          <CheckCheck className="w-3 h-3 text-cyan-200/80" />
+                      <span className="inline-flex items-center">
+                        {msg.status === 'sending' ? (
+                          <span className="flex items-center gap-0.5 text-slate-300 animate-pulse" title="Sending message to mesh...">
+                            <Clock className="w-3 h-3 text-slate-300" />
+                          </span>
+                        ) : msg.status === 'sent' ? (
+                          <span className="flex items-center gap-0.5 text-slate-300" title="Sent to Server / Mesh Relay (Single check)">
+                            <Check className="w-3.5 h-3.5 text-slate-300" />
+                          </span>
+                        ) : msg.status === 'delivered' || msg.status === 'mesh-relayed' ? (
+                          <span className="flex items-center gap-0.5 text-slate-200" title="Delivered to Peer Device (Double check)">
+                            <CheckCheck className="w-3.5 h-3.5 text-slate-200" />
+                          </span>
+                        ) : msg.status === 'seen' || msg.status === 'read' ? (
+                          <span className="flex items-center gap-0.5 text-cyan-300 font-bold drop-shadow-[0_0_6px_rgba(6,182,212,0.9)]" title="Seen by Recipient (Cyan Double check)">
+                            <CheckCheck className="w-3.5 h-3.5 text-cyan-300" />
+                          </span>
                         ) : (
-                          <Check className="w-3 h-3 text-cyan-200/80" />
+                          <Check className="w-3.5 h-3.5 text-slate-300" />
                         )}
                       </span>
                     )}
@@ -602,12 +697,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 {isInspectingCipher && (
                   <div className="mt-2 p-2 rounded-xl bg-slate-950/80 backdrop-blur-md text-cyan-300 font-mono text-[10px] border border-cyan-400/40 space-y-1 shadow-inner">
                     <div className="flex items-center justify-between text-slate-400">
-                      <span>Raw E2EE Ciphertext (AES-256-GCM):</span>
+                      <span>Raw E2EE Ciphertext (AES-256-GCM + SenderKey):</span>
                       <span className="text-emerald-400">Zero-Knowledge Guaranteed</span>
                     </div>
                     <p className="break-all select-all text-slate-200">
                       {msg.encryptedPayloadSnippet}
                     </p>
+                    {msg.powHeader && (
+                      <div className="pt-1 text-[9px] text-emerald-400/90 border-t border-white/5 flex items-center justify-between">
+                        <span>PoW Nonce: #{msg.powHeader.nonce}</span>
+                        <span>Hash: {msg.powHeader.solutionHashHex.substring(0, 16)}...</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -638,8 +739,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   );
                 })}
 
-                {/* Quick Add Reaction, Reply & Cipher Buttons */}
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-slate-900/70 backdrop-blur-md p-0.5 rounded-xl border border-white/10">
+                {/* Quick Add Reaction, Reply & Cipher Buttons (Accessible on mobile & hover) */}
+                <div className="opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-slate-900/80 backdrop-blur-md p-0.5 rounded-xl border border-white/15">
                   <button
                     onClick={() => onReaction(msg.id, '🔥')}
                     className="p-1 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white cursor-pointer"
@@ -664,10 +765,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                   <button
                     onClick={() => handleReplyClick(msg)}
-                    className="p-1 rounded-lg hover:bg-white/10 text-slate-400 hover:text-cyan-300 cursor-pointer"
+                    className="p-1 rounded-lg hover:bg-white/10 text-slate-300 hover:text-cyan-300 cursor-pointer flex items-center gap-1 text-[10px] font-medium"
                     title="Quote Reply"
                   >
-                    <CornerDownRight className="w-3 h-3" />
+                    <CornerDownRight className="w-3 h-3 text-cyan-400" />
+                    <span className="hidden xs:inline text-cyan-300">Reply</span>
                   </button>
 
                   <button

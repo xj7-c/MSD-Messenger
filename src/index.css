@@ -1,6 +1,19 @@
 @import "tailwindcss";
 
 @layer utilities {
+  .safe-top {
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+  }
+  .safe-bottom {
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+  .safe-left {
+    padding-left: max(0.5rem, env(safe-area-inset-left));
+  }
+  .safe-right {
+    padding-right: max(0.5rem, env(safe-area-inset-right));
+  }
+
   .glass-panel {
     background: rgba(15, 23, 42, 0.65);
     backdrop-filter: blur(20px) saturate(180%);

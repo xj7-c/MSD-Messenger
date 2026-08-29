@@ -15,6 +15,9 @@ import { ArchitectureDocsModal } from './components/ArchitectureDocsModal';
 import { NewChatModal } from './components/NewChatModal';
 import { NotificationCenterModal } from './components/NotificationCenterModal';
 import { NotificationToastBanner } from './components/NotificationToastBanner';
+import { InstallAppModal } from './components/InstallAppModal';
+import { IncomingCallModal } from './components/IncomingCallModal';
+import { TacticalProtocolHubModal } from './components/TacticalProtocolHubModal';
 
 import { 
   CURRENT_USER, 
@@ -35,15 +38,17 @@ import {
 import { meshEngine, MeshEvent } from './services/meshEngine';
 import { soundFx } from './utils/soundFx';
 import { CryptoEngine } from './utils/cryptoEngine';
+import { extractCustomEmojisForText } from './utils/emojiParser';
 
 export default function App() {
   // Load or initialize persistent local user
   const [currentUser, setCurrentUser] = useState<User>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem('meshguard_user_profile');
+        const saved = localStorage.getItem('meshguard_user_profile_v4');
         if (saved) {
-          return JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          if (parsed && parsed.id) return parsed;
         }
       } catch (e) {
         // ignore
@@ -69,7 +74,7 @@ export default function App() {
     };
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem('meshguard_user_profile', JSON.stringify(initialUser));
+        localStorage.setItem('meshguard_user_profile_v4', JSON.stringify(initialUser));
       } catch (e) {
         // ignore
       }
@@ -83,7 +88,7 @@ export default function App() {
   // Persistent Chats Initialization (only real chats & live mesh hub)
   const [chats, setChats] = useState<Chat[]>(() => {
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('meshguard_chats_v3');
+      const stored = localStorage.getItem('meshguard_chats_v4');
       if (stored) {
         try {
           const parsed = JSON.parse(stored);
@@ -121,7 +126,7 @@ export default function App() {
 
   const [activeChatId, setActiveChatId] = useState<string>(() => {
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('meshguard_active_chat_id_v3');
+      const stored = localStorage.getItem('meshguard_active_chat_id_v4');
       if (stored) return stored;
     }
     return 'chat-mesh-squad';
@@ -132,7 +137,7 @@ export default function App() {
   // Persistent Messages dictionary mapped by chatId
   const [chatMessages, setChatMessages] = useState<Record<string, Message[]>>(() => {
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('meshguard_chat_messages_v3');
+      const stored = localStorage.getItem('meshguard_chat_messages_v4');
       if (stored) {
         try {
           const parsed = JSON.parse(stored);
@@ -167,16 +172,25 @@ export default function App() {
   useEffect(() => {
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem('meshguard_chats_v3', JSON.stringify(chats));
+        localStorage.setItem('meshguard_chats_v4', JSON.stringify(chats));
       } catch (e) {}
     }
   }, [chats]);
+
+  // Automatically save active chat ID to localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('meshguard_active_chat_id_v4', activeChatId);
+      } catch (e) {}
+    }
+  }, [activeChatId]);
 
   // Automatically save chat messages to localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem('meshguard_chat_messages_v3', JSON.stringify(chatMessages));
+        localStorage.setItem('meshguard_chat_messages_v4', JSON.stringify(chatMessages));
       } catch (e) {}
     }
   }, [chatMessages]);
@@ -200,7 +214,16 @@ export default function App() {
   const [showGroupHubDrawer, setShowGroupHubDrawer] = useState(false);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showNotificationCenterModal, setShowNotificationCenterModal] = useState(false);
+  const [showInstallModal, setShowInstallModal] = useState(false);
+  const [showProtocolHubModal, setShowProtocolHubModal] = useState(false);
   const [activeCallSession, setActiveCallSession] = useState<{ chat: Chat; isVideo: boolean } | null>(null);
+  const [incomingCall, setIncomingCall] = useState<{
+    chatId: string;
+    callerName: string;
+    callerAvatar?: string;
+    callerId: string;
+    isVideoOffer: boolean;
+  } | null>(null);
 
   // Notification System State
   const [notifications, setNotifications] = useState<AppNotification[]>(INITIAL_NOTIFICATIONS);
@@ -338,6 +361,17 @@ export default function App() {
               },
               participants: [
                 { user: currentUser, role: 'owner', joinedAt: Date.now() },
+                {
+                  user: {
+                    ...CURRENT_USER,
+                    id: incomingMsg.senderId,
+                    name: incomingMsg.senderName || 'Peer Node',
+                    avatarUrl: incomingMsg.senderAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+                    presence: 'mesh-direct',
+                  },
+                  role: 'member',
+                  joinedAt: Date.now(),
+                },
               ],
               lastMessage: incomingMsg,
             };
@@ -357,35 +391,70 @@ export default function App() {
 
         // Trigger notification if message is from another user and not currently active
         if (incomingMsg.senderId !== currentUser.id) {
-          pushNotification({
-            type: 'message',
-            title: `Message from ${incomingMsg.senderName}`,
-            description: incomingMsg.content.substring(0, 80),
-            category: 'messages',
-            avatar: incomingMsg.senderAvatar,
-            priority: 'normal',
-            actionLabel: 'Open Chat',
-            actionType: 'open-chat',
-            chatId: incomingMsg.chatId,
+          if (incomingMsg.chatId === activeChatId) {
+            // Automatically mark seen since user is in the chat
+            meshEngine.sendSeenReceipt(incomingMsg.chatId, incomingMsg.id, incomingMsg.senderId);
+          } else {
+            pushNotification({
+              type: 'message',
+              title: `Message from ${incomingMsg.senderName}`,
+              description: incomingMsg.content.substring(0, 80),
+              category: 'messages',
+              avatar: incomingMsg.senderAvatar,
+              priority: 'normal',
+              actionLabel: 'Open Chat',
+              actionType: 'open-chat',
+              chatId: incomingMsg.chatId,
+            });
+          }
+        }
+      } else if (event.type === 'message_status_updated') {
+        const { messageId, chatId, status } = event.payload;
+        if (chatId && messageId) {
+          setChatMessages((prev) => {
+            const list = prev[chatId] || [];
+            return {
+              ...prev,
+              [chatId]: list.map((m) => (m.id === messageId ? { ...m, status } : m)),
+            };
           });
         }
       } else if (event.type === 'incoming_call') {
         const callPayload = event.payload;
+        if (callPayload && callPayload.chatId) {
+          setIncomingCall({
+            chatId: callPayload.chatId,
+            callerName: callPayload.callerName || 'Mesh Peer Node',
+            callerAvatar: callPayload.callerAvatar,
+            callerId: callPayload.callerId || 'peer-remote',
+            isVideoOffer: !!callPayload.isVideo,
+          });
+        }
         pushNotification({
           type: 'call-incoming',
           title: 'Incoming Encrypted P2P Call',
-          description: `${callPayload.callerName || 'Peer'} is calling directly over Wi-Fi Direct WebRTC.`,
+          description: `${callPayload?.callerName || 'Peer'} is calling directly over Wi-Fi Direct WebRTC.`,
           category: 'messages',
           priority: 'urgent',
           actionLabel: 'Answer Call',
           actionType: 'open-chat',
-          chatId: callPayload.chatId,
+          chatId: callPayload?.chatId,
         });
       }
     });
 
     return () => unsubscribe();
   }, [activeChatId, currentUser, theme]);
+
+  // Mark all unread peer messages as seen when entering/switching to a chat
+  useEffect(() => {
+    if (!activeChatId) return;
+    const currentMsgs = chatMessages[activeChatId] || [];
+    const unseenPeerMsgs = currentMsgs.filter((m) => m.senderId !== currentUser.id && m.status !== 'seen');
+    unseenPeerMsgs.forEach((m) => {
+      meshEngine.sendSeenReceipt(activeChatId, m.id, m.senderId);
+    });
+  }, [activeChatId]);
 
   // Handle Mode Change (Dual-Hybrid vs Offline-Mesh vs Internet)
   const handleModeChange = (mode: ConnectivityMode) => {
@@ -394,13 +463,16 @@ export default function App() {
     soundFx.playCryptoVerify();
   };
 
-  // Handle Send Message
+  // Handle Send Message (Optimistic & Non-blocking)
   const handleSendMessage = async (
     content: string,
     fileAttachment?: FileAttachment,
     selfDestructSec?: number,
     quoteMessage?: { id: string; senderName: string; content: string }
   ) => {
+    // Extract custom emojis used in text to attach payload for 100% recipient rendering
+    const customEmojisPayload = extractCustomEmojisForText(content);
+
     const rawMsg: Message = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       chatId: activeChatId,
@@ -415,35 +487,28 @@ export default function App() {
       hopsCount: 1,
       reactions: [],
       fileAttachment,
+      customEmojisPayload: customEmojisPayload.length > 0 ? (customEmojisPayload as any) : undefined,
       isEncrypted: true,
       selfDestructSec,
       quoteMessage,
     };
 
-    // Dispatch via MeshEngine
-    const sentMsg = await meshEngine.dispatchMessage(rawMsg);
-
+    // 1. Optimistically append message to local state immediately (zero lag)
     setChatMessages((prev) => {
       const chatList = prev[activeChatId] || [];
-      if (chatList.some((m) => m.id === sentMsg.id)) {
-        return {
-          ...prev,
-          [activeChatId]: chatList.map((m) => (m.id === sentMsg.id ? sentMsg : m)),
-        };
-      }
       return {
         ...prev,
-        [activeChatId]: [...chatList, sentMsg],
+        [activeChatId]: [...chatList, rawMsg],
       };
     });
 
-    // Update active chat's last message and ratchet step
+    // 2. Update active chat's last message immediately
     setChats((prev) =>
       prev.map((c) =>
         c.id === activeChatId
           ? {
               ...c,
-              lastMessage: sentMsg,
+              lastMessage: rawMsg,
               e2eeRatchetState: {
                 ...c.e2eeRatchetState,
                 ratchetStep: c.e2eeRatchetState.ratchetStep + 1,
@@ -452,6 +517,20 @@ export default function App() {
           : c
       )
     );
+
+    // 3. Dispatch asynchronously via MeshEngine (WebSocket + BroadcastChannel + HTTP fallback)
+    try {
+      const sentMsg = await meshEngine.dispatchMessage(rawMsg);
+      setChatMessages((prev) => {
+        const chatList = prev[activeChatId] || [];
+        return {
+          ...prev,
+          [activeChatId]: chatList.map((m) => (m.id === rawMsg.id ? sentMsg : m)),
+        };
+      });
+    } catch (err) {
+      console.warn('Dispatch failed, falling back to local mesh status:', err);
+    }
   };
 
   // Handle Emoji Reaction
@@ -521,6 +600,20 @@ export default function App() {
       setChats((prev) => [newDirectChat, ...prev]);
       setActiveChatId(newDirectChat.id);
     }
+  };
+
+  // Handle Delete Chat
+  const handleDeleteChat = (chatId: string) => {
+    setChats((prev) => prev.filter((c) => c.id !== chatId));
+    setChatMessages((prev) => {
+      const next = { ...prev };
+      delete next[chatId];
+      return next;
+    });
+    if (activeChatId === chatId) {
+      setActiveChatId('chat-mesh-squad');
+    }
+    soundFx.playSend();
   };
 
   // Handle Uncompressed Transfer Completed
@@ -670,6 +763,8 @@ export default function App() {
           onOpenProfileCustomizer={() => setShowProfileCustomizerModal(true)}
           onOpenArchitecture={() => setShowArchitectureDocsModal(true)}
           onOpenNotifications={() => setShowNotificationCenterModal(true)}
+          onOpenInstallModal={() => setShowInstallModal(true)}
+          onOpenProtocolHub={() => setShowProtocolHubModal(true)}
           unreadNotificationsCount={notifications.filter((n) => !n.read).length}
           theme={theme}
           nodesCount={meshNodes.length}
@@ -679,17 +774,20 @@ export default function App() {
       {/* Main Workspace Area (Sidebar + Active Chat + Drawer) */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Navigation Sidebar */}
-        <div className={`h-full ${activeChatId ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 shrink-0`}>
+        <div className={`h-full ${activeChatId ? 'hidden md:flex' : 'flex'} w-full md:w-72 lg:w-80 xl:w-96 shrink-0`}>
           <Sidebar
             chats={chats}
             activeChatId={activeChatId}
+            currentUser={currentUser}
             onSelectChat={(id) => {
               setActiveChatId(id);
               soundFx.playSend();
             }}
             onNewChat={() => setShowNewChatModal(true)}
+            onDeleteChat={handleDeleteChat}
             meshNodes={meshNodes}
             onOpenRadar={() => setShowRadarModal(true)}
+            onOpenInstallModal={() => setShowInstallModal(true)}
             theme={theme}
           />
         </div>
@@ -869,7 +967,46 @@ export default function App() {
         />
       )}
 
-      {/* 10. Realtime Toast Notification Banner */}
+      {/* 10. Install App Modal */}
+      {showInstallModal && (
+        <InstallAppModal onClose={() => setShowInstallModal(false)} />
+      )}
+
+      {/* 10b. Tactical Protocol Hub Modal */}
+      {showProtocolHubModal && (
+        <TacticalProtocolHubModal onClose={() => setShowProtocolHubModal(false)} />
+      )}
+
+      {/* 11. Incoming P2P Call Modal Overlay */}
+      {incomingCall && (
+        <IncomingCallModal
+          callerName={incomingCall.callerName}
+          callerAvatar={incomingCall.callerAvatar}
+          callerId={incomingCall.callerId}
+          chatId={incomingCall.chatId}
+          isVideoOffer={incomingCall.isVideoOffer}
+          onAccept={(withVideo) => {
+            const targetChat = chats.find((c) => c.id === incomingCall.chatId) || chats[0];
+            setActiveCallSession({ chat: targetChat, isVideo: withVideo });
+            setIncomingCall(null);
+            meshEngine.sendCallSignal({
+              type: 'signal:call_answer',
+              chatId: incomingCall.chatId,
+              timestamp: Date.now(),
+            });
+          }}
+          onDecline={() => {
+            meshEngine.sendCallSignal({
+              type: 'signal:call_end',
+              chatId: incomingCall.chatId,
+              timestamp: Date.now(),
+            });
+            setIncomingCall(null);
+          }}
+        />
+      )}
+
+      {/* 12. Realtime Toast Notification Banner */}
       <NotificationToastBanner
         notification={activeToast}
         onDismiss={() => setActiveToast(null)}
